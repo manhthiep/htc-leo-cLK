@@ -49,7 +49,7 @@
 
 #define EXPAND(NAME) #NAME
 #define TARGET(NAME) EXPAND(NAME)
-#define DEFAULT_CMDLINE "console=null";
+#define DEFAULT_CMDLINE "";
 
 #ifdef MEMBASE
 #define EMMC_BOOT_IMG_HEADER_ADDR (0xFF000+(MEMBASE))

@@ -1,5 +1,8 @@
 #include <platform/iomap.h>
 #include <reg.h>
+#include <debug.h>
+#include <dev/keys.h>
+#include <arch/arm.h>
 
 // cedesmith: we need to stop interrupts or kernel will receive dex interrupt to early and crash
 #define VIC_REG(off) (MSM_VIC_BASE + (off))

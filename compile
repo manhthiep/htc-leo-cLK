@@ -12,7 +12,6 @@ if [ "$1" = "clean" ]; then
 fi
 
 rm bin/lk.bin
-rm bin/tinboot
 rm bin/os.nb.payload
 rm bin/os.nb
 rm bin/RUU_signed.nbh
@@ -27,18 +26,17 @@ cd lk
 make htcleo DEBUG=1
 [ $? -eq 0 ] || exit 1
 cp build-htcleo/lk.bin ../bin/
-cp build-htcleo/tinboot ../bin/
 cd ..
 
 
 
 cd bin
 cp template_os.nb.payload os.nb.payload
-wine osnbtool.exe -c os.nb.payload 0 tinboot
+wine osnbtool.exe -c os.nb.payload 0 lk.bin
 mv os.nb.payload.NEW os.nb.payload
 ./nbfix
 wine NBMerge.exe -kaiser os.nb
-wine yang.exe -F RUU_signed.nbh -f os.nb -t 0x400 -s 64 -d PB8110000 -c 11111111 -v CLK1.1 -l WWE
+wine yang.exe -F RUU_signed.nbh -f os.nb -t 0x400 -s 64 -d PB8110000 -c 11111111 -v CLK1.3 -l WWE
 cd ..
 
 

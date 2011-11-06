@@ -223,6 +223,11 @@ int update_firmware_image (struct update_header *header, char *name)
 
 int recovery_init (void)
 {
+	/** cedesmith: we can't update radio like native android phones
+	 *  so there is no need for misc partition just to boot recovery
+	 */
+	return -1;
+
 	struct recovery_message msg;
 	struct update_header header;
 	char partition_name[32];

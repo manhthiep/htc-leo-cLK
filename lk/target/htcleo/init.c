@@ -19,8 +19,7 @@
 static struct ptable flash_ptable;
 
 // align data on a 512 boundary so will not be interrupted in nbh
-#if 1
-//generic partition table
+#ifdef SYSTEM_PARTITION_SIZE
 static struct ptentry board_part_list[MAX_PTABLE_PARTS] __attribute__ ((aligned (512))) = {
 		{
 				.name = "PTABLE-MB", // PTABLE-BLK or PTABLE-MB for length in MB or BLOCKS
@@ -35,10 +34,10 @@ static struct ptentry board_part_list[MAX_PTABLE_PARTS] __attribute__ ((aligned 
 		},
 		{
 				.name = "system",
-				.length = 250 /* In MB */,
+				.length = SYSTEM_PARTITION_SIZE /* In MB */,
 		},
 		{
-				.length = 10 /* In MB */,
+				.length = 44 /* In MB */,
 				.name = "cache",
 		},
 		{
@@ -48,6 +47,12 @@ static struct ptentry board_part_list[MAX_PTABLE_PARTS] __attribute__ ((aligned 
 #else
 // partition table matching gau desire hd on my (cedesmith) phone
 // allows me to just swap bootloader from magldr to clk and viceversa
+/*
+ clk_recovery     | 28   | 28   | 219  | 53 | 9
+ clk_boot         | 28   | 28   | 241  | 53 | 9
+ system           | 68B  | 68A  | 269  | 61 | 9
+ userdata         | 64C  | 64C  | 8F4  | 50 | 11
+ */
 static struct ptentry board_part_list[MAX_PTABLE_PARTS] __attribute__ ((aligned (512))) = {
 		{
 				.name = "PTABLE-BLK", // or PTABLE-MB for len in MB
@@ -74,10 +79,14 @@ static struct ptentry board_part_list[MAX_PTABLE_PARTS] __attribute__ ((aligned 
 		},
 };
 #endif
+
+
 static unsigned num_parts = sizeof(board_part_list)/sizeof(struct ptentry);
 //#define part_empty(p) (p->name[0]==0 && p->start==0 && p->length==0 && p->flags==0 && p->type==0 && p->perm==0)
 #define IS_PART_EMPTY(p) (p->name[0]==0)
 
+extern unsigned load_address;
+extern unsigned boot_into_recovery;
 
 void keypad_init(void);
 void display_init(void);
@@ -93,11 +102,8 @@ void target_init(void)
 	unsigned blocks_per_plen = 1; //blocks per partition length
 	unsigned nand_num_blocks;
 
-
 	keys_init();
 	keypad_init();
-
-
 
 	uint16_t keys[] = {KEY_VOLUMEUP, KEY_VOLUMEDOWN, KEY_SOFT1, KEY_SEND, KEY_CLEAR, KEY_BACK, KEY_HOME};
 	for(unsigned i=0; i< sizeof(keys)/sizeof(uint16_t); i++)
@@ -110,17 +116,13 @@ void target_init(void)
 	}
 	dprintf(INFO, "htcleo_init\n");
 
-	// When boot mode is 1 it hangs
-	if(/*get_boot_reason()==1 ||*/ get_boot_reason()==2)
+	if(get_boot_reason()==2) // booting for offmode charging, start recovery so kernel will charge phone
 	{
-		dprintf(INFO, "reboot needed... \n");
-		reboot(0);
+		boot_into_recovery = 1;
+		//dprintf(INFO, "reboot needed... \n");
+		//reboot(0);
 	}
-
-	/**
-	 * cedesmith notes:
-	 * DON'T use smem_ptable_init and smem_get_apps_flash_start as 0:APPS points to wrong place
-	 */
+	dprintf(ALWAYS, "load address %x\n", load_address);
 
 	dprintf(INFO, "flash init\n");
 	flash_init();
@@ -131,10 +133,8 @@ void target_init(void)
 
 	ptable_init(&flash_ptable);
 
-	// cedesmith:DON'T USE SMEM ptable
-
 	if( strcmp(board_part_list[0].name,"PTABLE-BLK")==0 ) blocks_per_plen =1 ;
-	else if( strcmp(board_part_list[0].name,"PTABLE-MB")==0 ) blocks_per_plen = (1024*1024) /flash_info->block_size;
+	else if( strcmp(board_part_list[0].name,"PTABLE-MB")==0 ) blocks_per_plen = (1024*1024)/flash_info->block_size;
 	else panic("Invalid partition table\n");
 
 	start_block = HTCLEO_FLASH_OFFSET;
@@ -175,7 +175,12 @@ void target_init(void)
 	htcleo_ptable_dump(&flash_ptable);
 	flash_set_ptable(&flash_ptable);
 }
-
+void target_early_init(void)
+{
+	//cedesmith: write reset vector while we can as MPU kicks in after flash_init();
+	writel(0xe3a00546, 0); //mov r0, #0x11800000
+	writel(0xe590f004, 4); //ldr	r15, [r0, #4]
+}
 unsigned board_machtype(void)
 {
     return LINUX_MACHTYPE;
@@ -196,6 +201,8 @@ unsigned get_boot_reason(void)
 	}
 	return boot_reason;
 }
+
+
 unsigned target_pause_for_battery_charge(void)
 {
     if (get_boot_reason() == 2) return 1;

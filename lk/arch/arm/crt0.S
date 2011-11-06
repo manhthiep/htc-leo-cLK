@@ -36,6 +36,42 @@ _start:
 	b	arm_irq
 	b	arm_fiq
 
+#ifdef WSPL_VADDR
+//if LK is loaded by wince spl add romhdr
+.org 0x40
+	.word 0x43454345
+	.word (romhdr-_start)+WSPL_VADDR		// virtual address of romhdr
+	//.word romhdr+0x96C00000		// virtual address of romhdr
+	.word romhdr-_start				// file address of romhdr
+
+.org 0x00000900
+romhdr:
+	.word 0x2000000				// dllfirst
+	.word 0x2000000				// dlllast
+	.word WSPL_VADDR				// physfirst
+	.word WSPL_VADDR+(_end-_start)	// physlast
+	.word 0						// nummods (no TOCentry after ROMHDR)
+	.word WSPL_VADDR+(_end-_start) // ulRAMStart
+	.word WSPL_VADDR+(_end-_start)	// ulRAMFree
+	.word WSPL_VADDR+MEMSIZE	// ulRAMEnd
+	.word 0						// ulCopyEntries
+	.word 0						// ulCopyOffset
+	.word 0						// ulProfileLen
+	.word 0						// ulProfileOffset
+	.word 0						// numfiles
+	.word 0						// ulKernelFlags
+	.word 0x80808080			// ulFSRamPercent
+	.word 0						// ulDrivglobStart
+	.word 0						// ulDrivglobLen
+	.hword 0x1C2				// usCPUType
+	.hword 0x2					// usMiscFlags
+	.word 0						// pExtensions
+	.word 0						// ulTrackingStart
+	.word 0						// ulTrackingLen
+.org 0x00001000
+#endif
+
+
 reset:
 	/* do some cpu setup */
 #if ARM_WITH_CP15
@@ -73,9 +109,13 @@ reset:
 #endif
 
 	/* see if we need to relocate */
+	ldr		r1, = .Laddr
+	ldr		r0, = _start
+	sub		r1, r1, r0
 	mov		r0, pc
-	sub		r0, r0, #(.Laddr - _start)
+	sub		r0, r0, r1 //#(.Laddr - _start)
 .Laddr:
+	str 	r0, load_address
 	ldr		r1, =_start
 	cmp		r0, r1
 	beq		.Lstack_setup
@@ -98,6 +138,10 @@ reset:
 warm_boot_tag:
 	.word 0
 #endif
+
+.global load_address
+load_address:
+	.word 0
 
 .Lstack_setup:
 	/* set up the stack for irq, fiq, abort, undefined, system/user, and lastly supervisor mode */
