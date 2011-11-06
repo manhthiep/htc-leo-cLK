@@ -4,6 +4,8 @@
  *
  * Copyright (c) 2009-2010, Code Aurora Forum. All rights reserved.
  *
+ * Copyright (c) 2011, Rick@xda-developers.com, All rights reserved.
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
  *     * Redistributions of source code must retain the above copyright
@@ -29,23 +31,37 @@
  * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *
  */
-
-#include <app.h>
-#include <debug.h>
 #include <arch/arm.h>
-#include <dev/udc.h>
-#include <string.h>
-#include <kernel/thread.h>
 #include <arch/ops.h>
+#include <kernel/thread.h>
+#include <platform/iomap.h>
+#include <platform/timer.h>
+#include <sys/types.h>
+ 
+#include <app.h>
+#include <bits.h>
+#include <compiler.h>
+#include <debug.h>
+#include <err.h>
+#include <hsusb.h>
+#include <platform.h>
+#include <reg.h>
+#include <smem.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdarg.h>
 
 #include <dev/flash.h>
-#include <lib/ptable.h>
-#include <dev/keys.h>
 #include <dev/fbcon.h>
+#include <dev/keys.h>
+#include <dev/udc.h>
 
-#include "recovery.h"
+#include <lib/ptable.h>
+#include <lib/vptable.h>
+
 #include "bootimg.h"
 #include "fastboot.h"
+#include "recovery.h"
 #include "version.h"
 
 #define EXPAND(NAME) #NAME
@@ -61,18 +77,71 @@
 #define RECOVERY_MODE   0x77665502
 #define FASTBOOT_MODE   0x77665500
 
+#ifndef __PLATFORM_SPLASH_H
+#define __PLATFORM_SPLASH_H
+#endif
+
+#define SPLASH_IMAGE_WIDTH     153
+#define SPLASH_IMAGE_HEIGHT    480
+
+#define FONT_WIDTH		5
+#define FONT_HEIGHT		12
+
+#define SCREEN_WIDTH 480
+#define SCREEN_HEIGHT 800
+
+#define ERR_KEY_CHANGED 99
+
+void platform_uninit_timer(void);
+void *target_get_scratch_address(void);
+void reboot_device(unsigned reboot_reason);
+void target_battery_charging_enable(unsigned enable, unsigned disconnect);
+void display_shutdown(void);
+void nand_erase(const char *arg);
+void cmd_powerdown(const char *arg, void *data, unsigned sz);
+void disp_menu(int selection, char *menu[], int loop);
+void shutdown(void);
+void keypad_init(void);
+void display_init(void);
+void htcleo_ptable_dump(struct ptable *ptable);
+void cmd_dmesg(const char *arg, void *data, unsigned sz);
+void target_display_init();
+void cmd_oem_register();
+void shutdown_device(void);
+void dispmid(const char *fmt, int sel);
+void start_keylistener(void);
+void eval_keyup(void);
+void eval_keydown(void);
+void draw_clk_header(void);
+void cmd_flashlight(void);
+void redraw_menu(void);
+void prnt_nand_stat(void);
+
+int target_is_emmc_boot(void);
+int boot_linux_from_flash(void);
+
+int key_listener(void *arg);
+
+unsigned boot_into_sboot = 0;
+unsigned board_machtype(void);
+unsigned get_boot_reason(void);
+unsigned check_reboot_mode(void);
+unsigned* target_atag_mem(unsigned* ptr);
+
+unsigned long long mmc_ptn_size (unsigned char * name);
+unsigned long long mmc_ptn_offset (unsigned char * name);
+
+unsigned int mmc_read (unsigned long long data_addr, unsigned int* out, unsigned int data_len);
+unsigned int mmc_write (unsigned long long data_addr, unsigned int data_len, unsigned int* in);
+
+uint16_t keys[] = {KEY_VOLUMEUP, KEY_VOLUMEDOWN, KEY_SOFT1, KEY_SEND, KEY_CLEAR, KEY_BACK, KEY_HOME};
+uint16_t keyp = ERR_KEY_CHANGED;
+
 static const char *emmc_cmdline = " androidboot.emmc=true";
-//static const char *battchg_pause = " androidboot.battchg_pause=true";
 static const char *battchg_pause = " androidboot.mode=offmode_charging";
 
-
-static struct udc_device surf_udc_device = {
-	.vendor_id	= 0x18d1,
-	.product_id	= 0x0D02,
-	.version_id	= 0x0001,
-	.manufacturer	= "Google",
-	.product	= "Android",
-};
+char amss_ver[16];
+char *Menuid = "HBOOT";
 
 struct atag_ptbl_entry
 {
@@ -81,21 +150,446 @@ struct atag_ptbl_entry
 	unsigned size;
 	unsigned flags;
 };
+struct menu_item {
+	char mTitle[64];
+	char command[64];
+	
+	int x;
+	int y;
+};
 
-void platform_uninit_timer(void);
-unsigned* target_atag_mem(unsigned* ptr);
-unsigned board_machtype(void);
-unsigned check_reboot_mode(void);
-void *target_get_scratch_address(void);
-int target_is_emmc_boot(void);
-void reboot_device(unsigned);
-void target_battery_charging_enable(unsigned enable, unsigned disconnect);
-unsigned int mmc_write (unsigned long long data_addr,
-			unsigned int data_len, unsigned int* in);
-unsigned long long mmc_ptn_offset (unsigned char * name);
-unsigned long long mmc_ptn_size (unsigned char * name);
-void display_shutdown(void);
+#define MAX_MENU 16
 
+struct menu {
+	int maxarl;
+	int selectedi;
+	
+	int top_offset;
+	int bottom_offset;
+	
+	struct menu_item item[MAX_MENU];
+};
+struct menu main_menu;
+struct menu sett_menu;
+struct menu *active_menu;
+
+static struct udc_device surf_udc_device = {
+	.vendor_id	= 0x18d1,
+	.product_id	= 0x0D02,
+	.version_id	= 0x0001,
+	.manufacturer	= "Google",
+	.product	= "Android",
+};
+void update_radio_ver(void)
+{
+	unsigned ver_base = 0xef230;
+	// Dump AMMS version
+	*(unsigned int *) (*amss_ver + 0x0) = readl(MSM_SHARED_BASE + ver_base + 0x0);
+	*(unsigned int *) (*amss_ver + 0x4) = readl(MSM_SHARED_BASE + ver_base + 0x4);
+	*(unsigned int *) (*amss_ver + 0x8) = readl(MSM_SHARED_BASE + ver_base + 0x8);
+	*(unsigned int *) (*amss_ver + 0xc) = readl(MSM_SHARED_BASE + ver_base + 0xc);
+	amss_ver[15] = 0;
+	return;
+}
+void parse_tag_msm_wifi_from_spl(void)
+{
+	#define MSM_SPLHOOD_BASE     0xF9200000 //IOMEM(0xF9200000)
+	#define MSM_SPLHOOD_PHYS     0x0
+	#define MSM_SPLHOOD_SIZE     SZ_1M
+    uint32_t id1, id2, id3, id4, id5, id6;
+    //uint32_t id_base = 0xFC028; //real mac offset found in spl for haret.exe on WM
+	uint32_t id_base = 0xef2a0;
+    id1 = readl(MSM_SHARED_BASE + id_base + 0x0);
+    id2 = readl(MSM_SHARED_BASE + id_base + 0x1);
+    id3 = readl(MSM_SHARED_BASE + id_base + 0x2);
+    id4 = readl(MSM_SHARED_BASE + id_base + 0x3);
+    id5 = readl(MSM_SHARED_BASE + id_base + 0x4);
+    id6 = readl(MSM_SHARED_BASE + id_base + 0x5);
+	char nvs_mac_addr[32];
+	sprintf(nvs_mac_addr, "macaddr=%i:%i:%i:%i:%i:%i\n", id1 , id2 , id3 , id4 , id5 , id6 );
+    printf("\n\nDevice Real Wifi Mac Address: %s\n", nvs_mac_addr);
+    return;
+}
+unsigned get_radiover(void){
+	unsigned radio_ver = readl(MSM_SHARED_BASE+0xef220);
+	return radio_ver;
+}
+unsigned get_imei(void){
+	unsigned dev_imei = readl(MSM_SHARED_BASE+0xef260);
+	return dev_imei;
+}
+unsigned get_pid(void){
+	unsigned dev_pid = readl(MSM_SHARED_BASE+0xef210);
+	return dev_pid;
+}
+void selector_disable(void)
+{
+	fbcon_set_x_cord(active_menu->item[active_menu->selectedi].x);
+	fbcon_set_y_cord(active_menu->item[active_menu->selectedi].y);
+	fbcon_forcetg(true);
+	fbcon_reset_colors_rgb555();
+	_dputs(active_menu->item[active_menu->selectedi].mTitle);
+	fbcon_forcetg(false);
+}
+void selector_enable(void)
+{
+	fbcon_set_x_cord(active_menu->item[active_menu->selectedi].x);
+	fbcon_set_y_cord(active_menu->item[active_menu->selectedi].y);
+	fbcon_settg(0x001f);
+	fbcon_setfg(0xffff);
+	_dputs(active_menu->item[active_menu->selectedi].mTitle);
+	fbcon_reset_colors_rgb555();
+}
+void eval_command(void)
+{
+    char command[32];
+    strcpy(command, active_menu->item[active_menu->selectedi].command);
+	
+	if (!memcmp(command,"boot_recv", strlen(command))){
+        fbcon_resetdisp();
+        boot_into_sboot = 0;
+        boot_into_recovery = 1;
+        boot_linux_from_flash();
+        return;
+
+	} else if (!memcmp(command,"prnt_clrs", strlen(command))){
+        fbcon_resetdisp();
+		draw_clk_header();
+		redraw_menu();
+		selector_enable();
+        return;
+		
+    } else if (!memcmp(command,"boot_sbot", strlen(command))){
+        fbcon_resetdisp();
+        boot_into_sboot = 1;
+        boot_into_recovery = 0;
+        boot_linux_from_flash();
+        return;
+
+    } else if (!memcmp(command,"boot_nand", strlen(command))){
+        fbcon_resetdisp();
+        boot_into_sboot = 0;
+        boot_into_recovery = 0;
+        boot_linux_from_flash();
+        return;
+
+    }else if (!memcmp(command,"prnt_stat", strlen(command))){
+		/*fbcon_resetdisp();
+		draw_clk_header();
+		redraw_menu();*/
+        vpart_list();
+        return;
+	}else if (!memcmp(command,"prnt_nand", strlen(command))){
+		prnt_nand_stat();
+		return;
+	}else if (!memcmp(command,"goto_rept", strlen(command))){
+		printf("\n   ERROR!: Feature not compiled");
+		return;
+    }else if (!memcmp(command,"goto_sett", strlen(command))){
+		//sett_menu.top_offset = main_menu.top_offset;
+		//sett_menu.bottom_offset = main_menu.bottom_offset;
+		fbcon_resetdisp();
+		Menuid="Settings";
+		draw_clk_header();
+		active_menu = &sett_menu;
+		redraw_menu();
+		selector_enable();
+        return;
+
+    }else if (!memcmp(command,"goto_main", strlen(command))){
+        //vpart_list();
+		fbcon_resetdisp();
+		Menuid="HBOOT";
+		draw_clk_header();
+		active_menu = &main_menu;
+		redraw_menu();
+		selector_enable();
+        return;
+		
+    }else if (!memcmp(command,"acpu_ggwp", strlen(command))){
+        reboot_device(0);
+        return;
+	}else if (!memcmp(command,"acpu_bgwp", strlen(command))){
+		reboot_device(FASTBOOT_MODE);
+		return;
+    }else if (!memcmp(command,"acpu_pawn", strlen(command))){
+        shutdown();
+        return;
+    }else if (!memcmp(command,"enable_extrom", strlen(command))){
+		vpart_enable_extrom();
+		printf("Will Auto-Reboot in 2 Seconds for changes to take place.");
+		thread_sleep(2000);
+		reboot_device(FASTBOOT_MODE);
+        return;
+    }else if (!memcmp(command,"disable_extrom", strlen(command))){
+		vpart_disable_extrom();
+		printf("Will Auto-Reboot in 2 Seconds for changes to take place.");
+		thread_sleep(2000);
+		reboot_device(FASTBOOT_MODE);
+        return;
+    }else if (!memcmp(command,"init_flsh", strlen(command))){
+		cmd_flashlight();
+		return;
+	}else if (!memcmp(command,"MSM_wifimac",strlen(command))){
+		parse_tag_msm_wifi_from_spl();
+		return;
+	}
+	printf("HBOOT BUG: Somehow fell through eval_cmd()\n");
+	return;
+}
+void redraw_menu(void)
+{
+	if (didyouscroll())
+	{
+		fbcon_resetdisp();
+		draw_clk_header();
+	}
+    int current_offset = fbcon_get_y_cord();
+
+    if (active_menu->top_offset < 1){
+        active_menu->top_offset = current_offset;
+    }else{
+        fbcon_set_y_cord(active_menu->top_offset);
+    }
+	if (active_menu->top_offset > 1 && active_menu->bottom_offset > 1)
+		fbcon_clear_region(active_menu->top_offset,active_menu->bottom_offset);
+		
+	for (uint8_t i=0;; i++){
+		if ((strlen(active_menu->item[i].mTitle) != 0) && !(i > active_menu->maxarl) ){
+			_dputs("   ");
+			if(active_menu->item[i].x == 0)
+				active_menu->item[i].x = fbcon_get_x_cord();
+			if(active_menu->item[i].y == 0)
+				active_menu->item[i].y = fbcon_get_y_cord();
+			_dputs(active_menu->item[i].mTitle);
+			_dputs("\n");
+		} else {
+			break;
+		}
+	}
+
+    _dputs("\n");
+		
+	if (active_menu->bottom_offset < 1){
+        active_menu->bottom_offset = fbcon_get_y_cord();
+    }else{
+        fbcon_set_y_cord(active_menu->bottom_offset);
+    }
+
+    if (current_offset > fbcon_get_y_cord())
+        fbcon_set_y_cord(current_offset);
+	
+}
+static int menu_item_down()
+{
+	thread_set_priority(HIGHEST_PRIORITY);
+	
+	if (didyouscroll())
+	{
+		redraw_menu();
+	}
+	
+	int current_y_offset = fbcon_get_y_cord();
+	int current_x_offset = fbcon_get_x_cord();
+	
+	selector_disable();
+	
+	if (active_menu->selectedi == (active_menu->maxarl-1))
+	{
+		active_menu->selectedi=0;
+	} else {
+		active_menu->selectedi++;
+	}
+	
+    selector_enable();
+	
+	fbcon_set_y_cord(current_y_offset);
+	fbcon_set_x_cord(current_x_offset);
+	
+    thread_set_priority(DEFAULT_PRIORITY);
+	return 0;
+}
+static int menu_item_up()
+{
+	thread_set_priority(HIGHEST_PRIORITY);
+	
+	if (didyouscroll())
+	{
+		redraw_menu();
+	}
+	
+	int current_y_offset = fbcon_get_y_cord();
+	int current_x_offset = fbcon_get_x_cord();
+	
+	selector_disable();
+	
+	if ((active_menu->selectedi) == 0)
+	{
+		active_menu->selectedi=(active_menu->maxarl-1);
+	}	else	{
+		active_menu->selectedi--;
+	}
+	
+    selector_enable();
+	
+	fbcon_set_y_cord(current_y_offset);
+	fbcon_set_x_cord(current_x_offset);
+	
+	thread_set_priority(DEFAULT_PRIORITY);
+	return 0;
+}
+void add_menu_item(struct menu *xmenu,const char *name,const char *command){
+	if(xmenu->maxarl==MAX_MENU){
+		printf("Menu: is overloaded with entry %s",name);
+		return;
+	}
+	strcpy(xmenu->item[xmenu->maxarl].mTitle,name);
+	strcpy(xmenu->item[xmenu->maxarl].command,command);
+	
+	xmenu->item[xmenu->maxarl].x = 0;
+	xmenu->item[xmenu->maxarl].y = 0;
+	
+	xmenu->maxarl++;
+	return;
+}
+void init_menu(){
+	draw_clk_header();
+	
+	main_menu.top_offset    = 0;
+	main_menu.bottom_offset = 0;
+	main_menu.selectedi     = 0;
+	main_menu.maxarl		= 0;
+	
+	add_menu_item(&main_menu, "ANDROID NAND"  , "boot_nand");
+	add_menu_item(&main_menu, "ANDROID EMMC"  , "boot_sbot");
+	add_menu_item(&main_menu, "RECOVERY"      , "boot_recv");
+	add_menu_item(&main_menu, "FLASHLIGHT"    , "init_flsh");
+	add_menu_item(&main_menu, "SETTINGS"      , "goto_sett");
+	add_menu_item(&main_menu, "REBOOT"        , "acpu_ggwp");
+	add_menu_item(&main_menu, "REBOOT HBOOT"  , "acpu_bgwp");
+	add_menu_item(&main_menu, "POWERDOWN"     , "acpu_pawn");
+	
+	sett_menu.top_offset    = 0;
+	sett_menu.bottom_offset = 0;
+	sett_menu.selectedi     = 0;
+	sett_menu.maxarl		= 0;
+	
+	if (vparts.extrom_enabled)
+	{
+		add_menu_item(&sett_menu,"ExtROM ENABLED, SELECT TO DISABLE !","disable_extrom");
+	}else{
+		add_menu_item(&sett_menu,"ExtROM DISABLED, SELECT TO ENABLE !","enable_extrom");
+	}
+	
+	add_menu_item(&sett_menu, "PARSE_TAG_MSM_WIFI_FROM_SPL", "MSM_wifimac");
+	add_menu_item(&sett_menu, "PRINT NAND STATS"  , "prnt_nand");
+	add_menu_item(&sett_menu, "PRINT PART STATS  ", "prnt_stat");
+	add_menu_item(&sett_menu, "REPARTITION NAND\n", "goto_rept");
+	add_menu_item(&sett_menu, "BACK"              , "goto_main");
+	
+	active_menu = &main_menu;
+	redraw_menu();
+	selector_enable();
+	start_keylistener();
+}
+void eval_keydown(void){
+	if (keyp == ERR_KEY_CHANGED) {return;}
+    switch (keys[keyp]){
+        case KEY_VOLUMEUP:
+			//thread_resume(thread_create("sel_up", &menu_item_up, NULL, HIGHEST_PRIORITY, DEFAULT_STACK_SIZE));
+			menu_item_up();
+        break;
+        case KEY_VOLUMEDOWN:
+			//thread_resume(thread_create("sel_dn", &menu_item_down, NULL, HIGHEST_PRIORITY, DEFAULT_STACK_SIZE));
+			menu_item_down();
+        break;
+        case KEY_SEND: // dial
+            eval_command();
+        break;
+        case KEY_CLEAR: // hangup
+        break;
+        case KEY_BACK:
+        break;
+    }
+}
+void eval_keyup(void){
+	if (keyp == ERR_KEY_CHANGED) {return;}
+    switch (keys[keyp]){
+        case KEY_VOLUMEUP:
+        break;
+        case KEY_VOLUMEDOWN:
+        break;
+        case KEY_SEND: // dial
+        break;
+        case KEY_CLEAR: //hangup
+        break;
+        case KEY_BACK:
+        break;
+    }
+}
+int key_repeater(void *arg)
+{
+	uint16_t last_key_i_remember = keyp;
+	uint8_t counter1 = 0;
+	for(;;)
+	{
+		if ((keyp == ERR_KEY_CHANGED || (last_key_i_remember!=keyp)))
+		{
+			thread_exit(0);
+			return 0;
+		} else {
+			thread_sleep(10);
+			counter1++;
+			if(counter1>75)
+			{
+				counter1=0;
+				break;
+			}
+		}
+	}
+	while((keyp!=ERR_KEY_CHANGED)&&(last_key_i_remember==keyp)&&(keys_get_state(keys[keyp])!=0))
+	{
+		eval_keydown();
+		thread_sleep(100);
+	}
+	thread_exit(0);
+	return 0;
+}
+int key_listener(void *arg)
+{
+	for (;;) {
+        for(uint16_t i=0; i< sizeof(keys)/sizeof(uint16_t); i++)
+        if (keys_get_state(keys[i]) != 0){
+			keyp = i;
+			eval_keydown();
+			thread_resume(thread_create("key_repeater", &key_repeater, NULL, DEFAULT_PRIORITY, 4096));
+            while (keys_get_state(keys[keyp]) !=0){thread_sleep(1);}
+            eval_keyup();
+			keyp = 99;
+        }
+	}
+	thread_exit(0);
+	return 0;
+}
+void start_keylistener(void){
+	thread_resume(thread_create("key_listener", &key_listener, 0, LOW_PRIORITY, 4096));
+}
+void draw_clk_header(void){
+	fbcon_setfg(0x02E0);
+	printf("\n   LEO100 HX-BC SHIP S-OFF\n   HBOOT-0.01.0000\n   TOUCH PANEL-MicroP(LED) 0x05\n   SPL-CotullaHSPL 0x30\n   RADIO-%s\n   %s\n\n\n   ", amss_ver, BUILD_DATE);
+	fbcon_settg(0x001f);fbcon_setfg(0xffff);
+	_dputs(Menuid);
+	fbcon_settg(0xffff);fbcon_setfg(0xC3A0);
+	_dputs("\n\n\n   <VOL UP> to previous item\n   <VOL DOWN> to next item\n   <CALL> to select item\n   <BACK> to return\n\n\n");
+	fbcon_setfg(0x0000);
+}
+void cmd_powerdown(const char *arg, void *data, unsigned sz)
+{
+	dprintf(INFO, "Powering down the device\n");
+	fastboot_okay("Device Powering Down");
+	shutdown();
+	thread_exit(0);
+}
 static void ptentry_to_tag(unsigned **ptr, struct ptentry *ptn)
 {
 	struct atag_ptbl_entry atag_ptn;
@@ -111,13 +605,17 @@ static void ptentry_to_tag(unsigned **ptr, struct ptentry *ptn)
 	*ptr += sizeof(struct atag_ptbl_entry) / sizeof(unsigned);
 }
 
+unsigned target_pause_for_battery_charge(void);
+void htcleo_boot(void* kernel,unsigned machtype,void* tags);
+
 void boot_linux(void *kernel, unsigned *tags, 
 		const char *cmdline, unsigned machtype,
 		void *ramdisk, unsigned ramdisk_size)
 {
 	unsigned *ptr = tags;
 	unsigned pcount = 0;
-	void (*entry)(unsigned,unsigned,unsigned*) = kernel;
+	/* Unused variable :o */
+	//void (*entry)(unsigned,unsigned,unsigned*) = kernel;
 	struct ptable *ptable;
 	int cmdline_len = 0;
 	int have_cmdline = 0;
@@ -219,7 +717,7 @@ unsigned page_mask = 0;
 #define ROUND_TO_PAGE(x,y) (((x) + (y)) & (~(y)))
 
 static unsigned char buf[4096]; //Equal to max-supported pagesize
-
+/*
 int boot_linux_from_mmc(void)
 {
 	struct boot_img_hdr *hdr = (void*) buf;
@@ -230,7 +728,8 @@ int boot_linux_from_mmc(void)
 	const char *cmdline;
 
 	uhdr = (struct boot_img_hdr *)EMMC_BOOT_IMG_HEADER_ADDR;
-	if (!memcmp(uhdr->magic, BOOT_MAGIC, BOOT_MAGIC_SIZE)) {
+	if (!memcmp(uhdr->magic, BOOT_MAGIC, BOOT_MAGIC_SIZE))
+	{
 		dprintf(INFO, "Unified boot method!\n");
 		hdr = uhdr;
 		goto unified_boot;
@@ -240,26 +739,24 @@ int boot_linux_from_mmc(void)
 		ptn = mmc_ptn_offset("boot");
 		if(ptn == 0) {
 			dprintf(CRITICAL, "ERROR: No boot partition found\n");
-                    return -1;
+			return -1;
 		}
-	}
-	else
-	{
+	} else {
 		ptn = mmc_ptn_offset("recovery");
 		if(ptn == 0) {
 			dprintf(CRITICAL, "ERROR: No recovery partition found\n");
-                    return -1;
+            return -1;
 		}
 	}
 
 	if (mmc_read(ptn + offset, (unsigned int *)buf, page_size)) {
 		dprintf(CRITICAL, "ERROR: Cannot read boot image header\n");
-                return -1;
+        return -1;
 	}
 
 	if (memcmp(hdr->magic, BOOT_MAGIC, BOOT_MAGIC_SIZE)) {
 		dprintf(CRITICAL, "ERROR: Invaled boot image header\n");
-                return -1;
+        return -1;
 	}
 
 	if (hdr->page_size && (hdr->page_size != page_size)) {
@@ -271,23 +768,20 @@ int boot_linux_from_mmc(void)
 	n = ROUND_TO_PAGE(hdr->kernel_size, page_mask);
 	if (mmc_read(ptn + offset, (void *)hdr->kernel_addr, n)) {
 		dprintf(CRITICAL, "ERROR: Cannot read kernel image\n");
-                return -1;
+        return -1;
 	}
 	offset += n;
 
 	n = ROUND_TO_PAGE(hdr->ramdisk_size, page_mask);
 	if (mmc_read(ptn + offset, (void *)hdr->ramdisk_addr, n)) {
 		dprintf(CRITICAL, "ERROR: Cannot read ramdisk image\n");
-                return -1;
+        return -1;
 	}
 	offset += n;
 
 unified_boot:
-	dprintf(INFO, "\nkernel  @ %x (%d bytes)\n", hdr->kernel_addr,
-		hdr->kernel_size);
-	dprintf(INFO, "ramdisk @ %x (%d bytes)\n", hdr->ramdisk_addr,
-		hdr->ramdisk_size);
-
+	dprintf(INFO, "\nkernel @ %x (%d bytes)\n", hdr->kernel_addr, hdr->kernel_size);
+	dprintf(INFO, "ramdisk @ %x (%d bytes)\n", hdr->ramdisk_addr, hdr->ramdisk_size);
 	if(hdr->cmdline[0]) {
 		cmdline = (char*) hdr->cmdline;
 	} else {
@@ -297,15 +791,17 @@ unified_boot:
 	strcat(cmdline,cLK_version);
 
 	dprintf(INFO, "cmdline = '%s'\n", cmdline);
-	
-	dprintf(INFO, "\nBooting Linux\n");
-	boot_linux((void *)hdr->kernel_addr, (void *)TAGS_ADDR,
-		   (const char *)cmdline, board_machtype(),
-		   (void *)hdr->ramdisk_addr, hdr->ramdisk_size);
 
+	dprintf(INFO, "\nBooting Linux\n");
+	
+	boot_linux((void *)hdr->kernel_addr, (void *)TAGS_ADDR,
+		(const char *)cmdline, board_machtype(),
+		(void *)hdr->ramdisk_addr, hdr->ramdisk_size);
+	
 	return 0;
 }
 
+*/
 int boot_linux_from_flash(void)
 {
 	struct boot_img_hdr *hdr = (void*) buf;
@@ -313,8 +809,8 @@ int boot_linux_from_flash(void)
 	struct ptentry *ptn;
 	struct ptable *ptable;
 	unsigned offset = 0;
-	const char *cmdline;
-
+	char *cmdline;
+/*
 	if (target_is_emmc_boot()) {
 		hdr = (struct boot_img_hdr *)EMMC_BOOT_IMG_HEADER_ADDR;
 		if (memcmp(hdr->magic, BOOT_MAGIC, BOOT_MAGIC_SIZE)) {
@@ -323,28 +819,42 @@ int boot_linux_from_flash(void)
 		}
 		goto continue_boot;
 	}
-
+*/
 	ptable = flash_get_ptable();
 	if (ptable == NULL) {
 		dprintf(CRITICAL, "ERROR: Partition table not found\n");
 		return -1;
 	}
+	/* Fixed Hang after failed boot */
+	if (boot_into_recovery){ // Boot from recovery
+		boot_into_sboot = 0;
+		dprintf(ALWAYS,"\n\nBooting to recovery...\n\n");
+		
+        ptn = ptable_find(ptable, "recovery");
+        if (ptn == NULL) {
+	        dprintf(CRITICAL, "ERROR: No recovery partition found\n");
+			boot_into_recovery=0;
+	        return -1;
+        }
+		
+	} else if (boot_into_sboot){ //Boot from sboot partition
+		dprintf(INFO,"\n\nBooting from sboot partition...\n\n");
+		ptn = ptable_find(ptable,"sboot");
+		if (ptn == NULL){
+			dprintf(CRITICAL,"ERROR: No sboot partition found!\n");
+			boot_into_sboot=0;
+			return -1;
+		}
+		
+	} else { // Standard boot
 
-	if(!boot_into_recovery)
-	{
-	        ptn = ptable_find(ptable, "boot");
-	        if (ptn == NULL) {
-		        dprintf(CRITICAL, "ERROR: No boot partition found\n");
-		        return -1;
-	        }
-	}
-	else
-	{
-	        ptn = ptable_find(ptable, "recovery");
-	        if (ptn == NULL) {
-		        dprintf(CRITICAL, "ERROR: No recovery partition found\n");
-		        return -1;
-	        }
+		dprintf(INFO,"\n\nNormal boot...\n\n");
+        ptn = ptable_find(ptable, "boot");
+        if (ptn == NULL) {
+	        dprintf(CRITICAL, "ERROR: No boot partition found\n");
+	        return -1;
+        }
+		
 	}
 
 	if (flash_read(ptn, offset, buf, page_size)) {
@@ -377,29 +887,25 @@ int boot_linux_from_flash(void)
 	}
 	offset += n;
 
-continue_boot:
-	dprintf(INFO, "\nkernel  @ %x (%d bytes)\n", hdr->kernel_addr,
+	dprintf(INFO, "kernel  @ %x (%d bytes)\n", hdr->kernel_addr,
 		hdr->kernel_size);
 	dprintf(INFO, "ramdisk @ %x (%d bytes)\n", hdr->ramdisk_addr,
 		hdr->ramdisk_size);
 
-	if(hdr->cmdline[0]) {
+	if(hdr->cmdline[0]){
 		cmdline = (char*) hdr->cmdline;
 	} else {
-		cmdline = DEFAULT_CMDLINE;
+		cmdline = "";
 	}
 	strcat(cmdline," clk=");
-	strcat(cmdline,cLK_version);
-
+	strcat(cmdline,PSUEDO_VERSION);
+	/* TODO: create/pass atags to kernel */
 	dprintf(INFO, "cmdline = '%s'\n", cmdline);
 
-	/* TODO: create/pass atags to kernel */
-
-	dprintf(INFO, "\nBooting Linux\n");
+	dprintf(INFO, "Booting Linux\n");
 	boot_linux((void *)hdr->kernel_addr, (void *)TAGS_ADDR,
-		   (const char *)cmdline, board_machtype(),
+		   (const char *) cmdline, board_machtype(),
 		   (void *)hdr->ramdisk_addr, hdr->ramdisk_size);
-
 	return 0;
 }
 
@@ -437,7 +943,7 @@ void cmd_boot(const char *arg, void *data, unsigned sz)
 	memmove((void*) KERNEL_ADDR, ptr + page_size, hdr.kernel_size);
 	memmove((void*) RAMDISK_ADDR, ptr + page_size + kernel_actual, hdr.ramdisk_size);
 
-	fastboot_okay("");
+	fastboot_okay("Booting linux.");
 	target_battery_charging_enable(0, 1);
 	udc_stop();
 
@@ -467,7 +973,7 @@ void cmd_erase(const char *arg, void *data, unsigned sz)
 		fastboot_fail("failed to erase partition");
 		return;
 	}
-	fastboot_okay("");
+	fastboot_okay("Partition Erased successfully");
 }
 
 
@@ -476,12 +982,11 @@ void cmd_erase_mmc(const char *arg, void *data, unsigned sz)
 	unsigned long long ptn = 0;
 	unsigned int out[512] = {0};
 
-	ptn = mmc_ptn_offset(arg);
+	ptn = mmc_ptn_offset((unsigned char *)arg);
 	if(ptn == 0) {
 		fastboot_fail("partition table doesn't exist");
 		return;
 	}
-
 
 	/* Simple inefficient version of erase. Just writing
 	   0 in first block */
@@ -489,7 +994,7 @@ void cmd_erase_mmc(const char *arg, void *data, unsigned sz)
 		fastboot_fail("failed to erase partition");
 		return;
 	}
-	fastboot_okay("");
+	fastboot_okay("MMC erased successfully.");
 }
 
 
@@ -498,7 +1003,7 @@ void cmd_flash_mmc(const char *arg, void *data, unsigned sz)
 	unsigned long long ptn = 0;
 	unsigned long long size = 0;
 
-	ptn = mmc_ptn_offset(arg);
+	ptn = mmc_ptn_offset((unsigned char *)arg);
 	if(ptn == 0) {
 		fastboot_fail("partition table doesn't exist");
 		return;
@@ -511,17 +1016,19 @@ void cmd_flash_mmc(const char *arg, void *data, unsigned sz)
 		}
 	}
 
-	size = mmc_ptn_size(arg);
+
+ 	size = mmc_ptn_size((unsigned char *)arg);
 	if (ROUND_TO_PAGE(sz,511) > size) {
-		fastboot_fail("size too large");
-		return;
-	}
+ 		fastboot_fail("size too large");
+ 		return;
+ 	}
+	
 
 	if (mmc_write(ptn , sz, (unsigned int *)data)) {
 		fastboot_fail("flash write failure");
 		return;
 	}
-	fastboot_okay("");
+	fastboot_okay("MMC Partition Update successful");
 	return;
 }
 
@@ -543,7 +1050,7 @@ void cmd_flash(const char *arg, void *data, unsigned sz)
 		return;
 	}
 
-	if (!strcmp(ptn->name, "boot") || !strcmp(ptn->name, "recovery")) {
+	if (!strcmp(ptn->name, "boot") || !strcmp(ptn->name, "recovery") || !strcmp(ptn->name, "sboot")) {
 		if (memcmp((void *)data, BOOT_MAGIC, BOOT_MAGIC_SIZE)) {
 			fastboot_fail("image is not a boot image");
 			return;
@@ -562,17 +1069,17 @@ void cmd_flash(const char *arg, void *data, unsigned sz)
 		return;
 	}
 	dprintf(INFO, "partition '%s' updated\n", ptn->name);
-	fastboot_okay("");
+	fastboot_okay("Partition Update Successful.");
 }
 
 void cmd_continue(const char *arg, void *data, unsigned sz)
 {
-	fastboot_okay("");
+	fastboot_okay("Initiating normal Routine.");
 	target_battery_charging_enable(0, 1);
 	udc_stop();
 	if (target_is_emmc_boot())
 	{
-		boot_linux_from_mmc();
+		//boot_linux_from_mmc();
 	}
 	else
 	{
@@ -583,54 +1090,453 @@ void cmd_continue(const char *arg, void *data, unsigned sz)
 void cmd_reboot(const char *arg, void *data, unsigned sz)
 {
 	dprintf(INFO, "rebooting the device\n");
-	fastboot_okay("");
+	fastboot_okay("Rebooting Device.");
 	reboot_device(0);
 }
 
 void cmd_reboot_bootloader(const char *arg, void *data, unsigned sz)
 {
 	dprintf(INFO, "rebooting the device\n");
-	fastboot_okay("");
+	fastboot_okay("Rebooting Device to HBOOT.");
 	reboot_device(FASTBOOT_MODE);
 }
+void fastboot_okay(const char *info);
+void fastboot_fail(const char *reason);
+int fastboot_write(void *buf, unsigned len);
+void fastboot_register(const char *prefix, void (*handle)(const char *arg, void *data, unsigned sz));
 
-void splash_screen ()
+char charVal(char c)
 {
-	struct ptentry *ptn;
-	struct ptable *ptable;
-	struct fbcon_config *fb_display = NULL;
+	c&=0xf;
+	if(c<=9) return '0'+c;
+	return 'A'+(c-10);
+}
 
-	if (!target_is_emmc_boot())
+void send_mem(char* start, int len)
+{
+	char response[64];
+	while(len>0)
 	{
-		ptable = flash_get_ptable();
-		if (ptable == NULL) {
-			dprintf(CRITICAL, "ERROR: Partition table not found\n");
-			return -1;
-		}
+		int slen = len > 29 ? 29 : len;
+		memcpy(response, "INFO", 4);
+		response[4]=slen;
 
-		ptn = ptable_find(ptable, "splash");
-		if (ptn == NULL) {
-			dprintf(CRITICAL, "ERROR: No splash partition found\n");
-		} else {
-			fb_display = fbcon_display();
-			if (fb_display) {
-				if (flash_read(ptn, 0, fb_display->base,
-					(fb_display->width * fb_display->height * fb_display->bpp/8))) {
-					fbcon_clear();
-					dprintf(CRITICAL, "ERROR: Cannot read splash image\n");
-				}
-			}
+		for(int i=0; i<slen; i++)
+		{
+			response[5+i*2] = charVal(start[i]>>4);
+			response[5+i*2+1]= charVal(start[i]);
 		}
+		response[5+slen*2+1]=0;
+		fastboot_write(response, 5+slen*2);
+
+		start+=slen;
+		len-=slen;
 	}
 }
 
+void cmd_oem_smesg()
+{
+	send_mem((char*)0x1fe00018, MIN(0x200000, readl(0x1fe00000)));
+	fastboot_okay("");
+}
+
+void cmd_oem_dmesg()
+{
+	if(*((unsigned*)0x2FFC0000) == 0x43474244 /* DBGC */  ) //see ram_console_buffer in kernel ram_console.c
+	{
+		send_mem((char*)0x2FFC000C, *((unsigned*)0x2FFC0008));
+	}
+	fastboot_okay("");
+}
+
+int str2u(const char *x)
+{
+	while(*x==' ')x++;
+
+	unsigned base=10;
+	int sign=1;
+    unsigned n = 0;
+
+    if(strstr(x,"-")==x) { sign=-1; x++;};
+    if(strstr(x,"0x")==x) {base=16; x+=2;}
+
+    while(*x) {
+    	char d=0;
+        switch(*x) {
+        case '0': case '1': case '2': case '3': case '4': case '5': case '6': case '7': case '8': case '9':
+            d = *x - '0';
+            break;
+        case 'a': case 'b': case 'c': case 'd': case 'e': case 'f':
+            d = (*x - 'a' + 10);
+            break;
+        case 'A': case 'B': case 'C': case 'D': case 'E': case 'F':
+            d = (*x - 'A' + 10);
+            break;
+        default:
+            return sign*n;
+        }
+        if(d>=base) return sign*n;
+        n*=base;n+=d;
+        x++;
+    }
+
+    return sign*n;
+}
+void cmd_oem_dumpmem(const char *arg)
+{
+	char *sStart = strtok((char*)arg, " ");
+	char *sLen = strtok(NULL, " ");
+	if(sStart==NULL || sLen==NULL)
+	{
+		fastboot_fail("usage:oem dump start len");
+		return;
+	}
+
+	send_mem((char*)str2u(sStart), str2u(sLen));
+	fastboot_okay("");
+}
+
+void cmd_oem_set(const char *arg)
+{
+	char type=*arg; arg++;
+	char *sAddr = strtok((char*) arg, " ");
+	char *sVal = strtok(NULL, "\0");
+	if(sAddr==NULL || sVal==NULL)
+	{
+		fastboot_fail("usage:oem set[s,c,w] address value");
+		return;
+	}
+	char buff[64];
+	switch(type)
+	{
+		case 's':
+			memcpy((void*)str2u(sAddr), sVal, strlen(sVal));
+			send_mem((char*)str2u(sAddr), strlen(sVal));
+			break;
+		case 'c':
+			*((char*)str2u(sAddr)) = (char)str2u(sVal);
+			sprintf(buff, "%x", *((char*)str2u(sAddr)));
+			send_mem(buff, strlen(buff));
+			break;
+		case 'w':
+		default:
+			*((int*)str2u(sAddr)) = str2u(sVal);
+			sprintf(buff, "%x", *((int*)str2u(sAddr)));
+			send_mem(buff, strlen(buff));
+	}
+	fastboot_okay("");
+}
+void cmd_oem_cls(){
+	redraw_menu();
+	selector_enable();
+	fastboot_okay("");
+}
+
+void cmd_oem_part_add(const char *arg){
+	vpart_add(arg);
+	vpart_list();
+	fastboot_okay("");
+}
+
+void cmd_oem_part_resize(const char *arg){
+	vpart_resize(arg);
+	vpart_list();
+	fastboot_okay("");
+}
+
+void cmd_oem_part_del(const char *arg){
+	vpart_del(arg);
+	vpart_list();
+	fastboot_okay("");
+}
+
+void cmd_oem_part_commit(){
+	vpart_commit();
+	printf("\n Partition changes saved! Will Reboot device in 2 secs\n");
+	fastboot_okay("");
+	thread_sleep(1980);
+	reboot_device(FASTBOOT_MODE);
+}
+
+void cmd_oem_part_read(){
+	vpart_read();
+	vpart_list();
+	fastboot_okay("");
+}
+
+void cmd_oem_part_list(){
+	vpart_list();
+	fastboot_okay("");
+}
+
+void cmd_oem_part_clear(){
+	vpart_clear();
+
+	vpart_list();
+	fastboot_okay("");
+}
+
+void cmd_oem_part_create_default(){
+	vpart_clear();
+	vpart_create_default();
+
+	vpart_list();
+	fastboot_okay("");
+}
+void prnt_nand_stat(void)
+{
+	struct flash_info *flash_info;
+	flash_info = flash_get_info();
+	unsigned start_block=0;
+	//unsigned vpt_start_block;
+	unsigned nand_num_blocks;
+	unsigned extrom_offset; // Space allocated by ExtROM and si backup on WinCE -  Used as cache partition
+	unsigned extrom_size = 191 ; // 191 blocks = ~24 Mb
+	nand_num_blocks = flash_info->num_blocks;
+	blk_pmb = (1024*1024)/flash_info->block_size; // Number of blocks per 1Mb
+	// Offset for partition with part table
+	extrom_offset = nand_num_blocks - extrom_size; // Extrom start offset  NAND Size - 24Mb
+	// Usable permanent flash storage - Complete size with extrom
+	flash_size_blk =(nand_num_blocks - start_block); // Max available flash size for user partitions
+	start_block = 0x219;
+	dprintf(INFO,"\n==============================================================================\n\n");
+	dprintf(INFO,"  Full flash size: %i blocks - %i Mb\n",nand_num_blocks, (int)(nand_num_blocks/blk_pmb));
+	dprintf(INFO,"  Usable flash size: %i blocks - %i Mb\n",flash_size_blk, (int)(flash_size_blk/blk_pmb));
+	dprintf(INFO,"  Flash ExtROM: offset:%x  blocks:%i  size:%i\n",extrom_offset, extrom_size, (int)(extrom_size/blk_pmb));
+	dprintf(INFO,"  Flash spare size: %i\n",flash_info->spare_size);
+	dprintf(INFO,"  Flash offset: %x\n",start_block);
+	dprintf(INFO,"  Partition table offset:%x  size:%x\n",0x216, 2);
+	dprintf(INFO,"\n==============================================================================\n\n");
+}
+void cmd_oem_nand_status(void)
+{
+	prnt_nand_stat();
+	fastboot_okay("");
+}
+void cmd_oem_part_format_all(){
+	
+	struct ptentry *ptn;
+	struct ptable *ptable;
+	ptable = flash_get_vptable();
+	
+	printf("\n\n\nInitializing flash format...\n");
+	
+	if (ptable == NULL) {
+		printf( "ERROR: VPTABLE not found!!!\n");
+		return;
+	}
+	ptn = ptable_find(ptable, "task29");
+
+	if (ptn == NULL) {
+		printf( "ERROR: No vptable partition!!!\n");
+		return;
+	}
+	printf("Formating flash...\n");
+	
+	printf("\n==============================================================================\n\n");
+	
+	flash_erase(ptn);
+	
+	printf("\n==============================================================================\n\n");
+	
+	printf("\nFormat complete ! \nReboot device to create default partition table, or create partitions manualy!\n\n");
+	
+	fastboot_okay("");
+}
+
+
+void cmd_oem_part_format_vpart(){
+	
+	struct ptentry *ptn;
+	struct ptable *ptable;
+	ptable = flash_get_vptable();
+	
+	printf("\n\n\nInitializing flash format...\n");
+	
+	if (ptable == NULL) {
+		printf( "ERROR: VPTABLE not found!!!\n");
+		return;
+	}
+	ptn = ptable_find(ptable, "vptable");
+
+	if (ptn == NULL) {
+		printf( "ERROR: No vptable partition!!!\n");
+		return;
+	}
+	
+	printf("Formating vptable...\n");
+	
+	printf("\n==============================================================================\n\n");
+	
+	flash_erase(ptn);
+	
+	printf("\n==============================================================================\n\n");
+	
+	printf("\nFormat complete ! \nReboot device to create default partition table, or create partitions manualy!\n\n");
+
+	
+	fastboot_okay("");
+	return;
+}
+
+void cmd_test()
+{
+	int i =0;
+	for (i=0;i<100;i++){
+		printf("Test line... %i\n", i);
+	}
+	fastboot_okay("Hello!");
+	redraw_menu();
+	selector_enable();
+}
+
+void cmd_oem_help(){
+	fbcon_resetdisp();
+
+	printf("\n================================ FASTBOOT HELP ================================\n");
+
+	printf(" fastboot oem help\n");
+	printf("  - This simple help\n\n");
+	
+	printf(" fastboot oem cls\n");
+	printf("  - Clear screen\n\n");
+	
+	printf(" fastboot oem part-add name:size\n");
+	printf("  - Create new partition with given name and size (in Mb, 0 for all space)\n");
+	printf("  - example: fastboot oem part-add system:160  - this will create system partition with size 160Mb\n\n");
+	
+		
+	printf(" fastboot oem part-resize name:size\n");
+	printf("  - Resize partition with given name to new size (in Mb, 0 for all space)\n");
+	printf("  - example: fastboot oem part-resize system:150  - this will resize system partition to 150Mb\n\n");
+	
+	printf(" fastboot oem part-del name\n");
+	printf("  - Delete named partition\n\n");
+	
+	printf(" fastboot oem part-create-default\n");
+	printf("  - Delete curent partition table and create default one\n\n");
+	
+	printf(" fastboot oem part-read\n");
+	printf("  - Reload partition layout from NAND\n\n");
+	
+	printf(" fastboot oem part-commit\n");
+	printf("  - Save curent layout to NAND. All changes to partition layout are tmp. untill commited to nand!\n\n");
+	
+	printf(" fastboot oem part-list\n");
+	printf("  - Display current partition layout\n\n");
+	
+	printf(" fastboot oem part-clear\n");
+	printf("  - Clear current partition layout\n\n");
+	
+	printf(" fastboot oem format-all\n");
+	printf("  - WARNING !!!  THIS COMMAND WILL FORMAT COMPLETE NAND (except bootloader)\n   - ALSO IT WILL DISPLAY BAD SECTORS IF THERE ARE ANY\n");
+	printf("  - !!!  THIS IS EQUIVALENT TO TASK 29 !!!\n\n");
+	
+	fastboot_okay("Look at your Device.");
+}
+static int flashlight(void *arg){
+	volatile unsigned *bank6_in = (unsigned int*)(0xA9000864);
+	volatile unsigned *bank6_out = (unsigned int*)(0xA9000814);
+	for(;;){
+		*bank6_out = *bank6_in ^ 0x200000;
+		udelay(496);
+		if(keys_get_state_n(0x123)!=0)break;
+	}
+	thread_exit(0);
+}
+void cmd_flashlight(void){
+	thread_resume((thread_t *)thread_create("Flashlight", &flashlight, NULL, HIGHEST_PRIORITY, DEFAULT_STACK_SIZE));
+	return;
+}
+void cmd_oem(const char *arg, void *data, unsigned sz)
+{
+	while(*arg==' ') arg++;
+	if(memcmp(arg, "cls", 3)==0)                           cmd_oem_cls();
+	if(memcmp(arg, "set", 3)==0)                           cmd_oem_set(arg+3);
+	if(memcmp(arg, "set", 3)==0)                           cmd_oem_set(arg+3);
+	if(memcmp(arg, "pwf ", 4)==0)                          cmd_oem_dumpmem(arg+4);
+	if(memcmp(arg, "test", 4)==0)                          cmd_test();
+	if(memcmp(arg, "dmesg", 5)==0)                         cmd_oem_dmesg();
+	if(memcmp(arg, "smesg", 5)==0)                         cmd_oem_smesg();
+	if(memcmp(arg, "nandstat", 8)==0)                      cmd_oem_nand_status();
+	if(memcmp(arg, "poweroff", 8)==0)                      cmd_powerdown(arg+8, data, sz);
+	if(memcmp(arg, "flashmmc ", 9)==0)                     cmd_flash_mmc(arg+9, data, sz);
+	if(memcmp(arg, "erasemmc ", 9)==0)                     cmd_erase_mmc(arg+9, data, sz);
+	if(memcmp(arg, "part-add ", 9)==0)                     cmd_oem_part_add(arg+9);
+	if(memcmp(arg, "part-del ", 9)==0)                     cmd_oem_part_del(arg+9);
+	if(memcmp(arg, "part-read", 9)==0)                     cmd_oem_part_read();
+	if(memcmp(arg, "part-list", 9)==0)                     cmd_oem_part_list();
+	if(memcmp(arg, "flashlight", 10)==0)                   cmd_flashlight();	
+	if(memcmp(arg, "part-clear", 10)==0)                   cmd_oem_part_clear();
+	if(memcmp(arg, "format-all", 10)==0)                   cmd_oem_part_format_all();
+	if(memcmp(arg, "part-commit", 11)==0)                  cmd_oem_part_commit();
+	if(memcmp(arg, "part-resize ", 12)==0)                 cmd_oem_part_resize(arg+12);
+	if(memcmp(arg, "format-vpart", 12)==0)                 cmd_oem_part_format_vpart();
+	if(memcmp(arg, "part-create-default", 19)==0)          cmd_oem_part_create_default();
+	if((memcmp(arg,"help",4)==0)||(memcmp(arg,"?",1)==0))  cmd_oem_help();
+}
+void target_init_fboot(void){
+	// Initiate Fastboot.
+	udc_init(&surf_udc_device);
+	fastboot_register("oem", cmd_oem);
+	fastboot_register("boot", cmd_boot);
+	fastboot_register("flash:", cmd_flash);
+	fastboot_register("erase:", cmd_erase);
+	fastboot_register("continue", cmd_continue);
+	fastboot_register("reboot", cmd_reboot);
+	fastboot_register("reboot-bootloader", cmd_reboot_bootloader);
+	fastboot_register("powerdown", cmd_powerdown);
+	fastboot_publish("version", "1.0");
+	fastboot_publish("version-bootloader", "1.0");
+	fastboot_publish("version-baseband", "unset");
+	fastboot_publish("serialno", "HTC HD2");
+	fastboot_publish("secure", "no");
+	fastboot_publish("product", TARGET(BOARD));
+	fastboot_publish("kernel", "lk");
+	fastboot_publish("author", "Shantanu Gupta, Danijel Posilovic, Arif Ali, Cedesmith, Qualcomm Innovation Centre, Travis Geiselbrecht.");
+	fastboot_init(target_get_scratch_address(),MEMBASE - SCRATCH_ADDR - 0x00100000);
+	udc_start();
+	target_battery_charging_enable(1, 0);
+}
+char ccharVal(char c)
+{
+	c&=0xf;
+	if(c<=9) return '0'+c;
+	return 'A'+(c-10);
+}
+void dump_mem(char* start, int len)
+{
+	char response[64];
+	while(len>0)
+	{
+		int slen = len > 29 ? 29 : len;
+		memcpy(response, "INF ", 4);
+		response[4]=slen;
+
+		for(int i=0; i<slen; i++)
+		{
+			response[5+i*2] = ccharVal(start[i]>>4);
+			response[5+i*2+1]= ccharVal(start[i]);
+		}
+		response[5+slen*2+1]=0;
+		_dputs(response);
+		start+=slen;
+		len-=slen;
+	}
+	_dputs("\n");
+}
+static int update_amss_str(void *arg)
+{
+	while(!(strlen(amss_ver))){update_radio_ver();}
+	fbcon_resetdisp();
+	draw_clk_header();
+	redraw_menu();
+	selector_enable();
+	thread_exit(0);
+	return 0; /* LOL, is it even possible ? */
+}
 void aboot_init(const struct app_descriptor *app)
 {
-	unsigned reboot_mode = 0;
-	unsigned disp_init = 0;
-	unsigned usb_init = 0;
-
-	/* Setup page size information for nand/emmc reads */
 	if (target_is_emmc_boot())
 	{
 		page_size = 2048;
@@ -641,85 +1547,31 @@ void aboot_init(const struct app_descriptor *app)
 		page_size = flash_page_size();
 		page_mask = page_size - 1;
 	}
-
-	/* Display splash screen if enabled */
-	#if DISPLAY_SPLASH_SCREEN
-	display_init();
-	dprintf(INFO, "Diplay initialized\n");
-	disp_init = 1;
-	diplay_image_on_screen();
-	#endif
-
 	/* Check if we should do something other than booting up */
-	if (keys_get_state(KEY_HOME) != 0)
+	if (keys_get_state(keys[6]) != 0)
 		boot_into_recovery = 1;
-	if (keys_get_state(KEY_SOFT1) != 0)
-		try_flash_recovery = 1;
-	if (keys_get_state(KEY_BACK) != 0)
-		goto fastboot;
-	if (keys_get_state(KEY_CLEAR) != 0)
-		goto fastboot;
-
-	#if NO_KEYPAD_DRIVER
-	/* With no keypad implementation, check the status of USB connection. */
-	/* If USB is connected then go into fastboot mode. */
-	usb_init = 1;
-	udc_init(&surf_udc_device);
-	if (usb_cable_status())
-		goto fastboot;
-	#endif
-
-	reboot_mode = check_reboot_mode();
-	if (reboot_mode == RECOVERY_MODE) {
-		boot_into_recovery = 1;
-	} else if(reboot_mode == FASTBOOT_MODE) {
-		goto fastboot;
+	if (keys_get_state(keys[5]) != 0)
+		goto bmenu;
+	if (keys_get_state(keys[2]) != 0){
+		display_init();
 	}
-
-	if (target_is_emmc_boot())
-	{
-		boot_linux_from_mmc();
-	}
-	else
-	{
+ 	if (check_reboot_mode() == RECOVERY_MODE) {
+ 		boot_into_recovery = 1;
+ 	} else if(check_reboot_mode() == FASTBOOT_MODE) {
+		goto bmenu;
+	} 
+	if(boot_into_recovery == 1) {
 		recovery_init();
-		boot_linux_from_flash();
-	}
-	dprintf(CRITICAL, "ERROR: Could not do normal boot. Reverting "
-		"to fastboot mode.\n");
-
-fastboot:
-	htcleo_fastboot_init();
-
-	if(!usb_init)
-		udc_init(&surf_udc_device);
-
-	fastboot_register("boot", cmd_boot);
-
-	if (target_is_emmc_boot())
+ 	}
+	/* Environment setup for continuing, Lets boot if we can */
+ 	boot_linux_from_flash();
+	/* Couldn't Find anything to do (OR) User pressed Back Key. Load Menu */
+bmenu:
 	{
-		fastboot_register("flash:", cmd_flash_mmc);
-		fastboot_register("erase:", cmd_erase_mmc);
+		thread_resume(thread_create("amss", &update_amss_str, NULL, LOW_PRIORITY, DEFAULT_STACK_SIZE));
+		display_init();
+		target_init_fboot();
+		init_menu();
 	}
-	else
-	{
-		fastboot_register("flash:", cmd_flash);
-		fastboot_register("erase:", cmd_erase);
-	}
-
-	fastboot_register("continue", cmd_continue);
-	fastboot_register("reboot", cmd_reboot);
-	fastboot_register("reboot-bootloader", cmd_reboot_bootloader);
-	fastboot_publish("product", TARGET(BOARD));
-	fastboot_publish("kernel", "lk");
-
-	//fastboot_init(target_get_scratch_address(), 120 * 1024 * 1024);
-	fastboot_init(target_get_scratch_address(), MEMBASE - SCRATCH_ADDR - 0x00100000);
-	udc_start();
-	target_battery_charging_enable(1, 0);
 }
-
-APP_START(aboot)
-	.init = aboot_init,
-APP_END
-
+APP_START(aboot).init = aboot_init,APP_END
