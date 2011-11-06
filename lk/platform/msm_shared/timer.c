@@ -159,7 +159,8 @@ void platform_init_timer(void)
 
 static void wait_for_timer_op(void)
 {
-#if PLATFORM_QSD8K || PLATFORM_MSM7X30 || PLATFORM_MSM8X60
+	//cedesmith: this will hang on htcleo so removed PLATFORM_QSD8K
+#if PLATFORM_MSM7X30 || PLATFORM_MSM8X60
 	while(readl(SPSS_TIMER_STATUS)) ;
 #endif
 }

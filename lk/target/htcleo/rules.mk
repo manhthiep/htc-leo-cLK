@@ -33,7 +33,7 @@ KEYS_USE_GPIO_KEYPAD := 1
 #DEFINES += DISPLAY_SPLASH_SCREEN=1
 DEFINES += DISPLAY_TYPE_LCDC=1
 
-CFLAGS += -mlittle-endian
+CFLAGS += -mlittle-endian -mfpu=neon
 LDFLAGS += -EL
 
 MODULES += \
@@ -53,3 +53,6 @@ OBJS += \
 	$(LOCAL_DIR)/nand.o \
 	$(LOCAL_DIR)/keypad.o \
 	$(LOCAL_DIR)/atags.o 
+
+OBJS += $(LOCAL_DIR)/htcleo_boot.o \
+		$(LOCAL_DIR)/htcleo_boot_s.o

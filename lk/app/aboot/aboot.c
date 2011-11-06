@@ -61,7 +61,9 @@
 #define FASTBOOT_MODE   0x77665500
 
 static const char *emmc_cmdline = " androidboot.emmc=true";
-static const char *battchg_pause = " androidboot.battchg_pause=true";
+//static const char *battchg_pause = " androidboot.battchg_pause=true";
+static const char *battchg_pause = " androidboot.mode=offmode_charging";
+
 
 static struct udc_device surf_udc_device = {
 	.vendor_id	= 0x18d1,
@@ -199,37 +201,15 @@ void boot_linux(void *kernel, unsigned *tags,
 		dprintf(INFO, "cmdline: %s\n", cmdline);
 
 	enter_critical_section();
-	//cedesmith: this will hang
-	//platform_uninit_timer();
+	platform_uninit_timer();
 	arch_disable_cache(UCACHE);
 	arch_disable_mmu();
 #if DISPLAY_SPLASH_SCREEN
 	display_shutdown();
 #endif
 
-	__asm__ volatile (
-		"dsb \n"
-		"isb \n"
-	);
-
-	//cedesmith: cotulla's code so kernel will not crash. aux control register
-	__asm__ volatile (
-		"MRC p15, 0, r0, c1, c0, 1 \n"
-		"BIC r0, r0, #0x40 \n" // (1<<6)  Instruction cache reload on a parity error disabled
-		"BIC r0, r0, #0x200000 \n" // (1<<21) undocumented bit ?
-		"MCR p15, 0, r0, c1, c0, 1 \n"
-	);
-
-	/*
-	// flash on to see we get here
-	__asm__ volatile (
-		"ldr     r4, =0xa9000864        @ bank6_in (phys) \n"
-		"ldr     r5, =0xa9000814        @ bank6_out (phys) \n"
-		"orr     r6, r4, #0x200000      @ 22nd bit for flash \n"
-		"str     r6, [r5, #0]           @ store in out (enables bright for 500ms, limited by hardware) \n"
-	);
-	*/
-	entry(0, machtype, tags);
+	htcleo_boot(kernel, machtype, tags);
+	//entry(0, machtype, tags);
 }
 
 unsigned page_size = 0;

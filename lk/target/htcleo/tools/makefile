@@ -1,30 +1,17 @@
-#Makefile to generate appsboot.mbn
-
-ifeq ($(BOOTLOADER_OUT),.)
-APPSBOOTHEADER_DIR  := $(BUILDDIR)
-else
-APPSBOOTHEADER_DIR  := $(BOOTLOADER_OUT)/../../
-endif
+#Makefile to generate tinboot
 
 SRC_DIR  := target/$(TARGET)/tools
-COMPILER := gcc
+EXTRA_CLEANDEPS += tinboot_clean
 
-ifeq ($(BUILD_NANDWRITE), 1)
-  APPSBOOTHDR_FILES :=
-else
-  APPSBOOTHDR_FILES := appsboot.mbn
-endif
+APPSBOOTHEADER: $(BUILDDIR)/tinboot
 
-APPSBOOTHEADER: $(APPSBOOTHDR_FILES)
+$(BUILDDIR)/tinboot.o: $(SRC_DIR)/tinboot.S $(OUTBIN)
+	$(TOOLCHAIN_PREFIX)as $(SRC_DIR)/tinboot.S -I "$(BUILDDIR)" -o $(BUILDDIR)/tinboot.o
+
+$(BUILDDIR)/tinboot: $(BUILDDIR)/tinboot.o
+	$(OBJCOPY) $(BUILDDIR)/tinboot.o -O binary $(BUILDDIR)/tinboot
 
 
-appsboot.mbn: appsboothd.mbn $(OUTBIN)
-	cat $(APPSBOOTHEADER_DIR)/appsboothd.mbn $(OUTBIN) > $(APPSBOOTHEADER_DIR)/appsboot.mbn
-	rm -rf $(APPSBOOTHEADER_DIR)/appsboothd.mbn 
-
-appsboothd.mbn: mkheader $(OUTBIN)
-	$(SRC_DIR)/mkheader $(OUTBIN) $(APPSBOOTHEADER_DIR)/appsboothd.mbn
-
-mkheader: $(SRC_DIR)/mkheader.c
-	${COMPILER} $(SRC_DIR)/mkheader.c -o $(SRC_DIR)/mkheader
-
+	
+tinboot_clean: 
+	rm -f $(BUILDDIR)/tinboot.o $(BUILDDIR)/tinboot

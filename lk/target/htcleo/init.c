@@ -9,6 +9,9 @@
 #include <dev/gpio_keypad.h>
 #include <lib/ptable.h>
 #include <dev/flash.h>
+#include <smem.h>
+#include <platform/iomap.h>
+#include <reg.h>
 
 #define LINUX_MACHTYPE  2524
 #define HTCLEO_FLASH_OFFSET	0x219
@@ -43,30 +46,31 @@ static struct ptentry board_part_list[MAX_PTABLE_PARTS] __attribute__ ((aligned 
 		},
 };
 #else
-// partition table matching cotulla's build
+// partition table matching gau desire hd on my (cedesmith) phone
+// allows me to just swap bootloader from magldr to clk and viceversa
 static struct ptentry board_part_list[MAX_PTABLE_PARTS] __attribute__ ((aligned (512))) = {
 		{
 				.name = "PTABLE-BLK", // or PTABLE-MB for len in MB
 		},
 		{
-				.name = "boot",
+				.name = "recovery",
 				.start = 0x219,
-				.length = 0x25 /* In blocks */,
+				.length = 0x28 /* In blocks */,
+		},
+		{
+				.name = "boot",
+				.start = 0x241,
+				.length = 0x28 /* In blocks */,
 		},
 		{
 				.name = "system",
-				.start = 0x23E,
-				.length = 0x831 /* In blocks */,
-		},
-		{
-				.name = "cache",
-				.start = 0xA70,
-				.length = 0x140 /* In blocks */,
+				.start = 0x269,
+				.length = 0x68B /* In blocks */,
 		},
 		{
 				.name = "userdata",
-				.start = 0xBB0,
-				.length = 0x390,
+				.start = 0x8F4,
+				.length = 0x64C,
 		},
 };
 #endif
@@ -81,6 +85,7 @@ void htcleo_ptable_dump(struct ptable *ptable);
 void cmd_dmesg(const char *arg, void *data, unsigned sz);
 void reboot(unsigned reboot_reason);
 void target_display_init();
+unsigned get_boot_reason(void);
 void target_init(void)
 {
 	struct flash_info *flash_info;
@@ -88,8 +93,11 @@ void target_init(void)
 	unsigned blocks_per_plen = 1; //blocks per partition length
 	unsigned nand_num_blocks;
 
+
 	keys_init();
 	keypad_init();
+
+
 
 	uint16_t keys[] = {KEY_VOLUMEUP, KEY_VOLUMEDOWN, KEY_SOFT1, KEY_SEND, KEY_CLEAR, KEY_BACK, KEY_HOME};
 	for(unsigned i=0; i< sizeof(keys)/sizeof(uint16_t); i++)
@@ -97,18 +105,15 @@ void target_init(void)
 	{
 		display_init();
 		_dputs("cedesmith's LK (CLK) v1.1\n");
+		dprintf(ALWAYS,"key %d pressed\n", i);
 		break;
 	}
 	dprintf(INFO, "htcleo_init\n");
 
-	// SPL seams to pass something somehow to kernel.
-	// Without this it hangs on 1st boot and when battery charger is pluged
-	// with this it just auto restarts
-	char* cold_boot=(char*)(MEMBASE-1);
-	if(*cold_boot==0)
+	// When boot mode is 1 it hangs
+	if(/*get_boot_reason()==1 ||*/ get_boot_reason()==2)
 	{
-		*cold_boot=1;
-		dprintf(INFO, "cold boot detected... reboot\n");
+		dprintf(INFO, "reboot needed... \n");
 		reboot(0);
 	}
 
@@ -179,6 +184,22 @@ unsigned board_machtype(void)
 void reboot_device(unsigned reboot_reason)
 {
     reboot(reboot_reason);
+}
+
+unsigned boot_reason = 0xFFFFFFFF;
+unsigned get_boot_reason(void)
+{
+	if(boot_reason==0xFFFFFFFF)
+	{
+		boot_reason = readl(MSM_SHARED_BASE+0xef244);
+		dprintf(INFO, "boot reason %x\n", boot_reason);
+	}
+	return boot_reason;
+}
+unsigned target_pause_for_battery_charge(void)
+{
+    if (get_boot_reason() == 2) return 1;
+    return 0;
 }
 
 int target_is_emmc_boot(void)
