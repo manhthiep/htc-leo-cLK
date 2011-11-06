@@ -1,0 +1,55 @@
+#!/bin/bash
+
+#use codesourcery toolchain
+TOOLCHAIN_PREFIX=arm-none-eabi-
+export TOOLCHAIN_PREFIX
+
+if [ "$1" = "clean" ]; then
+	rm -rf lk/build-htcleo
+	rm bin/nbfix
+	rm bin/lk.bin
+	rm bin/tinboot
+	rm tinboot/tinboot
+	rm tinboot/tinboot.o
+	rm bin/os.nb.payload
+	rm bin/os.nb
+	rm bin/RUU_signed.nbh
+fi
+
+
+TOOLCHAIN_PREFIX="arm-none-eabi-"
+export TOOLCHAIN_PREFIX
+
+if [ ! -f bin/nbfix ]; then
+	gcc nbfix.c -o bin/nbfix
+fi
+
+if [ ! -f bin/lk.bin ]; then
+	cd lk
+	make htcleo EMMC_BOOT=0 DEBUG=1
+	[ $? -eq 0 ] || exit 1
+	cp build-htcleo/lk.bin ../bin/
+	cd ..
+fi
+
+if [ ! -f bin/tinboot ]; then
+	cd tinboot
+	${TOOLCHAIN_PREFIX}as  tinboot.S -o tinboot.o
+	${TOOLCHAIN_PREFIX}objcopy tinboot.o -O binary tinboot
+	cp tinboot ../bin/
+	cd ..
+fi
+
+if [ ! -f bin/RUU_signed.nbh ]; then
+	cd bin
+	cp template_os.nb.payload os.nb.payload
+	wine osnbtool.exe -c os.nb.payload 0 tinboot
+	mv os.nb.payload.NEW os.nb.payload
+	./nbfix
+	wine NBMerge.exe -kaiser os.nb
+	wine yang.exe -F RUU_signed.nbh -f os.nb -t 0x400 -s 64 -d PB8110000 -c 11111111 -v CLK1.1 -l WWE
+
+	cd ..
+fi
+
+
