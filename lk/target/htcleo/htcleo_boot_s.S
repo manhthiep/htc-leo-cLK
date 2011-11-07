@@ -63,6 +63,16 @@ htcleo_boot_s:
 
 .ltorg
 
+.global htcleo_flash
+htcleo_flash:
+	ldr     r4, =0xa9000864
+	ldr     r5, =0xa9000814
+	orr     r6, r4, #0x200000
+	str     r6, [r5, #0]
+	bx		lr
+.ltorg
+
+
 // code to put at 0, get opcode from debug.lst
 .global pc_reset_vector
 .global pc_reset_vector_end

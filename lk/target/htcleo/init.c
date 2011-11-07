@@ -90,6 +90,7 @@ extern unsigned boot_into_recovery;
 
 void keypad_init(void);
 void display_init(void);
+void display_lk_version();
 void htcleo_ptable_dump(struct ptable *ptable);
 void cmd_dmesg(const char *arg, void *data, unsigned sz);
 void reboot(unsigned reboot_reason);
@@ -110,8 +111,8 @@ void target_init(void)
 	if (keys_get_state(keys[i]) != 0)
 	{
 		display_init();
-		_dputs("cedesmith's LK (CLK) v1.1\n");
-		dprintf(ALWAYS,"key %d pressed\n", i);
+		display_lk_version();
+		//dprintf(ALWAYS,"key %d pressed\n", i);
 		break;
 	}
 	dprintf(INFO, "htcleo_init\n");
@@ -174,6 +175,23 @@ void target_init(void)
 
 	htcleo_ptable_dump(&flash_ptable);
 	flash_set_ptable(&flash_ptable);
+}
+void display_lk_version()
+{
+	_dputs("cedesmith's LK (CLK) v1.3\n");
+}
+void htcleo_fastboot_init()
+{
+	// off charge and recovery boot failed, reboot to normal mode
+	if(get_boot_reason()==2) reboot(0);
+
+	// display not initialized
+	if(fbcon_display()==NULL)
+	{
+		display_init();
+		display_lk_version();
+		htcleo_ptable_dump(&flash_ptable);
+	}
 }
 void target_early_init(void)
 {

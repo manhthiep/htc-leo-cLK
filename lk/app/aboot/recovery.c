@@ -223,11 +223,6 @@ int update_firmware_image (struct update_header *header, char *name)
 
 int recovery_init (void)
 {
-	/** cedesmith: we can't update radio like native android phones
-	 *  so there is no need for misc partition just to boot recovery
-	 */
-	return -1;
-
 	struct recovery_message msg;
 	struct update_header header;
 	char partition_name[32];
@@ -250,12 +245,15 @@ int recovery_init (void)
 		return 0;
 	}
 
+// cedesmith: wince phone update radio and boot loader using spl
+#ifndef WSPL_VADDR
 	if (!strcmp("update-radio",msg.command)) {
 		valid_command = 1;
 		strcpy(partition_name, "FOTA");
 	}
 
 	//Todo: Add support for bootloader update too.
+#endif
 
 	if(!valid_command) {
 		//We need not to do anything

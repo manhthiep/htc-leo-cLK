@@ -6,7 +6,7 @@ PLATFORM := qsd8k
 
 #define system partition size (in MB), if not defined my custom (from magldr) layout is used. see init.c
 #DEFINES += SYSTEM_PARTITION_SIZE=150
-DEFINES += SYSTEM_PARTITION_SIZE=250
+#DEFINES += SYSTEM_PARTITION_SIZE=250
 
 #cedesmith note: MEMBASE requires edit in platform/qsd8k/rules.mk
 #MEMBASE := 0x20000000
@@ -67,6 +67,8 @@ OBJS += \
 	$(LOCAL_DIR)/keypad.o \
 	$(LOCAL_DIR)/atags.o 
 
-OBJS += $(LOCAL_DIR)/htcleo_boot.o \
-		$(LOCAL_DIR)/htcleo_boot_s.o
+OBJS += \
+	$(LOCAL_DIR)/htcleo_boot.o \
+	$(LOCAL_DIR)/htcleo_boot_s.o\
+	$(LOCAL_DIR)/platform.o
 		

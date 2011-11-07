@@ -680,6 +680,7 @@ void aboot_init(const struct app_descriptor *app)
 		"to fastboot mode.\n");
 
 fastboot:
+	htcleo_fastboot_init();
 
 	if(!usb_init)
 		udc_init(&surf_udc_device);
