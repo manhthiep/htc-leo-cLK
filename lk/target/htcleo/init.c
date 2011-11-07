@@ -25,6 +25,10 @@ static struct ptentry board_part_list[MAX_PTABLE_PARTS] __attribute__ ((aligned 
 				.name = "PTABLE-MB", // PTABLE-BLK or PTABLE-MB for length in MB or BLOCKS
 		},
 		{
+				.name = "misc",
+				.length = 1 /* In MB */,
+		},
+		{
 				.name = "recovery",
 				.length = 5 /* In MB */,
 		},
@@ -96,6 +100,7 @@ void cmd_dmesg(const char *arg, void *data, unsigned sz);
 void reboot(unsigned reboot_reason);
 void target_display_init();
 unsigned get_boot_reason(void);
+void cmd_oem_register();
 void target_init(void)
 {
 	struct flash_info *flash_info;
@@ -180,6 +185,7 @@ void display_lk_version()
 {
 	_dputs("cedesmith's LK (CLK) v1.3\n");
 }
+struct fbcon_config* fbcon_display(void);
 void htcleo_fastboot_init()
 {
 	// off charge and recovery boot failed, reboot to normal mode
@@ -192,6 +198,8 @@ void htcleo_fastboot_init()
 		display_lk_version();
 		htcleo_ptable_dump(&flash_ptable);
 	}
+
+	cmd_oem_register();
 }
 void target_early_init(void)
 {
@@ -206,20 +214,37 @@ unsigned board_machtype(void)
 
 void reboot_device(unsigned reboot_reason)
 {
+	writel(reboot_reason, 0x2FFB0000);
+	writel(reboot_reason^0x004b4c63, 0x2FFB0004); //XOR with cLK signature
     reboot(reboot_reason);
 }
 
 unsigned boot_reason = 0xFFFFFFFF;
+unsigned android_reboot_reason = 0;
+unsigned check_reboot_mode(void);
 unsigned get_boot_reason(void)
 {
 	if(boot_reason==0xFFFFFFFF)
 	{
 		boot_reason = readl(MSM_SHARED_BASE+0xef244);
 		dprintf(INFO, "boot reason %x\n", boot_reason);
+		if(boot_reason==1 || boot_reason==6)
+		{
+			if(readl(0x2FFB0000)==(readl(0x2FFB0004)^0x004b4c63))
+			{
+				android_reboot_reason = readl(0x2FFB0000);
+				dprintf(INFO, "android reboot reason %x\n", android_reboot_reason);
+				writel(0, 0x2FFB0000);
+			}
+		}
 	}
 	return boot_reason;
 }
-
+unsigned check_reboot_mode(void)
+{
+	get_boot_reason();
+	return android_reboot_reason;
+}
 
 unsigned target_pause_for_battery_charge(void)
 {

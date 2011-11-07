@@ -5,30 +5,19 @@ INCLUDES += -I$(LOCAL_DIR)/include -I$(LK_TOP_DIR)/platform/msm_shared
 PLATFORM := qsd8k
 
 #define system partition size (in MB), if not defined my custom (from magldr) layout is used. see init.c
-#DEFINES += SYSTEM_PARTITION_SIZE=150
+DEFINES += SYSTEM_PARTITION_SIZE=150
 #DEFINES += SYSTEM_PARTITION_SIZE=250
 
 #cedesmith note: MEMBASE requires edit in platform/qsd8k/rules.mk
-#MEMBASE := 0x20000000
-#MEMBASE := 0x27000000
-#MEMBASE := 0x2E000000
-#MEMSIZE := 0x00800000
-
 # maximum partition size will be about 340mb ( MEMBASE-SCRATCH_ADDR)
 MEMBASE := 0x28000000
-MEMSIZE := 0x00100000
-#SPL virtual address where LK is loaded 
-#DEFINES += WSPL_VADDR=0x80000000
-#SPL 0x26600000=>0x95100000 so VADDR = (0x28000000-0x26600000)+0x95100000
-DEFINES += WSPL_VADDR=0x96B00000
-#SPL 0x28500000=>0x98B00000
-
+MEMSIZE := 0x00100000 
+DEFINES += WSPL_VADDR=0x80000000
 
 BASE_ADDR        := 0x11800000
 TAGS_ADDR        := "(BASE_ADDR+0x00000100)"
 KERNEL_ADDR      := "(BASE_ADDR+0x00008000)"
 RAMDISK_ADDR     := "(BASE_ADDR+0x00a00000)"
-#SCRATCH_ADDR    := "(BASE_ADDR+0x04000000)"
 SCRATCH_ADDR     := "(BASE_ADDR+0x01400000)"
 
 #BASE_ADDR + 0x04000000
@@ -70,5 +59,6 @@ OBJS += \
 OBJS += \
 	$(LOCAL_DIR)/htcleo_boot.o \
 	$(LOCAL_DIR)/htcleo_boot_s.o\
-	$(LOCAL_DIR)/platform.o
+	$(LOCAL_DIR)/platform.o \
+	$(LOCAL_DIR)/oem_cmd.o
 		

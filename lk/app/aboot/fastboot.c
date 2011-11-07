@@ -228,22 +228,14 @@ void fastboot_okay(const char *info)
 	fastboot_ack("OKAY", info);
 }
 
+int fastboot_write(void *buf, unsigned len)
+{
+	return usb_write(buf, len);
+}
+
 static void cmd_getvar(const char *arg, void *data, unsigned sz)
 {
 	struct fastboot_var *var;
-
-	if(!strcmp(arg,"dmesg"))
-	{
-		char response[64];
-		for(char* c=(char*) 0x2FFC0000; c<(char*)(0x2FFC0000+0x00040000); c+=59)
-		{
-			memcpy(response, "INFO",4);memcpy(response+4, c, 59); response[63]=0;
-			//snprintf(response, 64, "%s%s", "INFO", c);
-			usb_write(response, 64);
-		}
-		fastboot_okay("");
-		return;
-	}
 
 	for (var = varlist; var; var = var->next) {
 		if (!strcmp(var->name, arg)) {
