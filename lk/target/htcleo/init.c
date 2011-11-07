@@ -183,7 +183,7 @@ void target_init(void)
 }
 void display_lk_version()
 {
-	_dputs("cedesmith's LK (CLK) v1.3\n");
+	_dputs("cedesmith's LK (CLK) v1.3.2\n");
 }
 struct fbcon_config* fbcon_display(void);
 void htcleo_fastboot_init()
@@ -228,7 +228,7 @@ unsigned get_boot_reason(void)
 	{
 		boot_reason = readl(MSM_SHARED_BASE+0xef244);
 		dprintf(INFO, "boot reason %x\n", boot_reason);
-		if(boot_reason==1 || boot_reason==6)
+		if(boot_reason!=2)
 		{
 			if(readl(0x2FFB0000)==(readl(0x2FFB0004)^0x004b4c63))
 			{
